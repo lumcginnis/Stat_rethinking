@@ -424,13 +424,17 @@ Each application has a 0 or 1 outcome for admission, but they have been aggregat
 
 Our job is to evaluate whether these data contain evidence of gender bias in admissions.  We will model the admission decisions, focusing on applicant gender as a predictor variable
 
+We want to fit a binomial regression that models admit as a function of each applicant's gender.
 ```{r 11.29}
 
+# construct index variable
 dat_list <- list(
 admit = d$admit,
 applications = d$applications,
-gid = ifelse( d$applicant.gender=="male" , 1 , 2 )
+gid = ifelse( d$applicant.gender=="male" , 1 , 2 ) # gid = gender identity. male = 1, female = 2
 )
+
+# the model
 m11.7 <- ulam(
 alist(
 admit ~ dbinom( applications , p ) ,
@@ -440,7 +444,9 @@ a[gid] ~ dnorm( 0 , 1.5 )
 precis( m11.7 , depth=2 )
 
 ```
+The posterior for male applicants, a[1], is higher than that of female applicants.
 
+HOw much higher? Let's calculate the contrast on the logit scale (relative shark) as well as on the outcome scale (absolute deer)
 ```{r 11.30}
 
 post <- extract.samples(m11.7)
@@ -449,10 +455,14 @@ diff_p <- inv_logit(post$a[,1]) - inv_logit(post$a[,2])
 precis( list( diff_a=diff_a , diff_p=diff_p ) )
 
 ```
+The log-odds difference is positive, corresponding to a higher probability of admission for male applicants. 
 
+On the probability scale itself, the difference is somewhere between 12% and 16%
+
+Posterior check
 ```{r 11.31}
 
-postcheck( m11.7 )
+postcheck( m11.7 ) # default posterior validation check function
 # draw lines connecting points from same dept
 for ( i in 1:6 ) {
 x <- 1 + 2*(i-1)
@@ -463,10 +473,16 @@ text( x+0.5 , (y1+y2)/2 + 0.05 , d$dept[x] , cex=0.8 , col=rangi2 )
 }
 
 ```
+There are only  departments in which women had a lower rate of admission than men (C and E), yet the model says that women should expect to have a 14% lower chance of admission.
+
+Instead of asking "What are the average probabilities of admission for women and men across all departments?" Let's try asking "What is the average difference in probability of admission between women and men within departments?"
 
 ```{r 11.32}
 
-dat_list$dept_id <- rep(1:6,each=2)
+# construct a mumerical index numbering the departments 1-6
+dat_list$dept_id <- rep(1:6,each=2) 
+
+# fit the models
 m11.8 <- ulam(
 alist(
 admit ~ dbinom( applications , p ) ,
@@ -474,10 +490,14 @@ logit(p) <- a[gid] + delta[dept_id] ,
 a[gid] ~ dnorm( 0 , 1.5 ) ,
 delta[dept_id] ~ dnorm( 0 , 1.5 )
 ) , data=dat_list , chains=4 , iter=4000 )
+
+# check posterior
 precis( m11.8 , depth=2 )
 
 ```
+The intercept for male applicants, a[1], is now a little smaller on average than the one for female applicants.
 
+Now let's calculate the contrasts against, both on relative (shark) and absolute (deer) scales:
 ```{r 11.33}
 
 post <- extract.samples(m11.8)
@@ -487,9 +507,14 @@ precis( list( diff_a=diff_a , diff_p=diff_p ) )
 
 
 ```
+If male applicants have it worse, it's only by a very small amount, about 2% on average
 
+Why did adding departments to the model change the inference about gender so much?
+
+Rates of admission vary a lot across departments, and women and men applied to different departments.
 ```{r 11.34}
 
+# Proportions of all applicants in each department that are from either men or women
 pg <- with( dat_list , sapply( 1:6 , function(k)
 applications[dept_id==k]/sum(applications[dept_id==k]) ) )
 rownames(pg) <- c("male","female")
@@ -497,14 +522,42 @@ colnames(pg) <- unique(d$dept)
 round( pg , 2 )
 
 ```
+Departments with a larger proportion of women applicants are also those with lower overall admissions rates.
 
+Department is probably a confound, in the sense that it misleads us about the direct causal effect. But it is not a confound, in the sense that it is probably a genuine causal path through gender influences admission. Gender influences choice of department, and department influences chance of admission. Controlling for department reveals a more plausible direct causal influence of gender.
+
+```{r}
+postcheck(m11.8)
+```
+The model lines up much better now with the variation among departments. It infers the direct effect G -> A by conditioning on D and closing the indirect path. This is another example of Mediation Analysis.
+
+What if there are unobserved confounds influencing both department and admissions? Like academic ability, which could influence choice of department and probability of admission. In that case conditioning on department is conditioning on a collider and it opens a non-causal path between gender and admissions.
+
+m11.8 is over-parameterized. We don't actually need both a[1] and a[2], because the individual delta parameters can stand for the acceptance rate of one of the genders in each department. Then we just need an average deviation across departments.
+
+Why might we want to over-parameterize the model? Because it makes it easier to assign priors. If we made one of the genders baseline and measured the other as a deviation from it, we would stumble into the issue of assuming that the acceptance rate for one of the genders is pre-data more uncertain than the other.
+
+
+### Poisson regression: for when the upper bound isn't known.
+
+The binomial model works here, provided we squint at it the right way. When a binomial distribution has a very small probability of an event p and a very large number of trials N, then it takes on a special shape. The expected value of a binomial distribution is just Np, and its variance is Np(1 − p). But when N is very large and p is very small, then these are approximately the same.
+
+Ex. A monastary is in the business of copying manuscripts. It employs 1000 monks, and each on any particular day about 1 of them finishes a manuscript. Since the monks are working independently of one another, and manuscripts vary in length, some days produce 3 or more manuscripts, and many days produce none. Since this is a binomial process, you can calculate the variance across days as Np(1−p) = 1000(0.001)(1−0.001) ≈ 1. You can simulate this, for example over 10,000 (1e5) days:
 ```{r 11.35}
 
 y <- rbinom(1e5,1000,1/1000)
 c( mean(y) , var(y) )
 
 ```
+The mean and the variance are nearly identical. This is a special shape of the binomial known as the Poisson distribution. It allows us to model binomial events for which the number of trials N is unknown or uncountably large. 
 
+The conventional link function for a Poisson model is the log link. This ensures that lamda (which represents both mean and variance) is always positive. But it also implies an exponential relationship between predictors and the expected value. Few natural phenomena behave exponentially for long, so one thing to always check with a log link is wheterh it makes sense at all ranges of the predictor variables. Priors on the log scale also scale in surprising ways. So prior predictive simulation is again helpful.
+
+## 11.2.1 Oceanic tool complexity
+
+A number of theories predict that larger populations will both develop and sustain more complex tool kits. It's also suggested that contact rates among populations effectively increase population size, as it's relevant to technological evolution.
+
+Load data: counts of unique tool types for 10 historic Oceanic societies (Locations in Fig 11.6)
 ```{r 11.36}
 
 library(rethinking)
@@ -513,20 +566,37 @@ d <- Kline
 d
 
 ```
+Keep in mind that the number of rows is not clearly the same as the “sample size” in a count model. The relationship between parameters and “degrees of freedom” is not simple, outside of simple linear regressions.
 
+Still, there isn’t a lot of data here, because there just aren’t that many historic Oceanic societies for which reliable data can be gathered. We’ll want to use regularization to damp down overfitting, as always. But as you’ll see, a lot can still be learned from these data. Any rules you’ve been taught about minimum sample sizes for inference are just non-Bayesian superstitions. 
+
+If you get the prior back, then the data aren’t enough. It’s that simple.
+
+Ok let's try to predict total_tools (the outcome variable).
+
+The impact of population on tool counts is moderated by high contact. This
+is to say that the association between total_tools and log population depends
+upon contact. So we will look for a positive interaction between log population
+and contact rate.
+
+First make new columns with the standardized log of population and an index variable for contact
 ```{r 11.37}
 
-d$P <- scale( log(d$population) )
-d$contact_id <- ifelse( d$contact=="high" , 2 , 1 )
+d$P <- scale( log(d$population) ) # log because theory says that it is the order of magnitude of the population that matters, not the absolute size of it.
+d$contact_id <- ifelse( d$contact=="high" , 2 , 1 ) # number of tools increases with the contact rate among islands
 
 ```
+The model that conforms to the research hypothesis includes an interaction between log-population and contact rate.
 
+First we need to figure out sensible priors. Let's plot a log-normal with these values for the (normal) mean and standard deviation:
 ```{r 11.38}
 
 curve( dlnorm( x , 0 , 10 ) , from=0 , to=100 , n=200 )
 
 ```
+This gives us a very large spike around 0, and a very long tail.
 
+How long is the tail
 ```{r 11.39}
 
 a <- rnorm(1e4,0,10)
@@ -534,35 +604,53 @@ lambda <- exp(a)
 mean( lambda )
 
 ```
+Very long. Enough tools to cover an entire island.
 
+McElreath suggests playing around with the curve code, trying different means and standard deviations.
+
+The fact to appreciate is that log link puts half the real numbers (the negative numbers) between 0 and 1 on the outcome scale.
+
+Here is his weakly informative suggestion:
 ```{r 11.40}
 
 curve( dlnorm( x , 3 , 0.5 ) , from=0 , to=100 , n=200 )
 
 ```
+Now we need a prior for B, the coefficient of log population.
 
+First we will consider a conventional flat prior like B ~ Normal(0,10)
 ```{r 11.41}
 
 N <- 100
 a <- rnorm( N , 3 , 0.5 )
 b <- rnorm( N , 0 , 10 )
+
+# plot 100 prior trends of standardized log population against total tools
 plot( NULL , xlim=c(-2,2) , ylim=c(0,100) )
       for ( i in 1:N ) curve( exp( a[i] + b[i]*x ) , add=TRUE , col=grau() )
 
 ```
+The pivoting around 0 is because that's the average log population. Values on the horizontal axis are z-scores, because the variable is standardized.
 
+This prior think sthat the vast majority of prior relationships between log population and total tools embody either explosive growth just above the mean log population size or rather catastrophic decline right before the mean. This is silly.
+
+Let's dampen the prior's enthusiasm for explosive relationships
 ```{r 11.42}
 
 set.seed(10)
 N <- 100
 a <- rnorm( N , 3 , 0.5 )
-b <- rnorm( N , 0 , 0.2 )
+b <- rnorm( N , 0 , 0.2 ) # much more reasonable
 plot( NULL , xlim=c(-2,2) , ylim=c(0,100) )
 for ( i in 1:N ) curve( exp( a[i] + b[i]*x ) , add=TRUE , col=grau() )
 
 
 ```
+Strong relationships are still possible but most of the mass is for rather flat relationships between total tols and log population.
 
+It will also help to view these priors on more natural outcome scales. The standardized log population variable is good for fitting. But it is bad for thinking. Population size has a natural zero, and we want to keep that in sight. Standardizing the variable destroys that. 
+
+First, here are 100 prior predictive trends between total tools and un-standardized log population:
 ```{r 11.43}
 
 x_seq <- seq( from=log(100) , to=log(200000) , length.out=100 )
@@ -572,7 +660,9 @@ ylab="total tools" )
 for ( i in 1:N ) lines( x_seq , lambda[i,] , col=grau() , lwd=1.5 )
 
 ```
+The most we expect to ever see in these data is 100 total tools. There are still some explosive options, but not many.
 
+Let's view these same curves on the natural population scale:
 ```{r 11.44}
 
 plot( NULL , xlim=range(exp(x_seq)) , ylim=c(0,500) , xlab="population" ,
@@ -580,13 +670,16 @@ ylab="total tools" )
 for ( i in 1:N ) lines( exp(x_seq) , lambda[i,] , col=grau() , lwd=1.5 )
 
 ```
+Poisson models with log links create log-linear relationships with their predictor variables. When a predictor variable is itself logged, this means we are assuming diminishing returns for the raw variable. Each additional person contributes a smaller increase in the expected number of tools.
 
+Here are some models
 ```{r 11.45}
 
 dat <- list(
 T = d$total_tools ,
 P = d$P ,
 cid = d$contact_id )
+
 # intercept only
 m11.9 <- ulam(
 alist(
@@ -594,6 +687,7 @@ T ~ dpois( lambda ),
 log(lambda) <- a,
 a ~ dnorm( 3 , 0.5 )
 ), data=dat , chains=4 , log_lik=TRUE )
+
 # interaction model
 m11.10 <- ulam(
 alist(
@@ -605,12 +699,20 @@ b[cid] ~ dnorm( 0 , 0.2 )
 
 ```
 
+Take a look at the PSIS comparison
 ```{r 11.46}
 
 compare( m11.9 , m11.10 , func=PSIS )
 
 ```
+We get the Pareto k warning again, indicating there are some highly influential points. Unsurprising for a small dataset, but we will need to keep this in mind when looking at the posterior predictions.
 
+It's not surprising that the intercept-only model m11.9 has a worse score, but it might be surprising that the "effective number of parameters" pPSIS is actually larger for the model with fewer parameters. m11.9 has one parameter, and m11.10 has four. WAIC would tell you the same thing. What's happening here?
+
+The only place that model complexity—a model’s tendency to overfit—and parameter count have a clear relationship is in a simple linear regression with flat priors. Once a distribution is bounded, for example, then parameter values near the boundary produce less overfitting than those far from the boundary. The same principle applies to data distributions. Any count near zero is harder to overfit. So overfitting risk depends both upon structural details of the model and the composition of the sample.
+
+In this sample a major source of overfitting risk is the highly influential point flagged by PSIS
+Here's the code to plot the data and superimpose posterior predictions for the expected number of tools at each population size and contact rate: (Fig 11.9)
 ```{r 11.47}
 
 k <- PSIS( m11.10 , pointwise=TRUE )$k
@@ -635,6 +737,7 @@ shade( lci , P_seq , xpd=TRUE )
 
 ```
 
+This plot is joined on its right by the same predictions shown on the natural scale, with raw population sizes on the horizontal. The code to do that is very similar, but you need to convert the P_seq to the natural scale, by reversing the standardization, and then you can just replace P_seq with the converted sequence in the lines and shade commands.
 ```{r 11.48}
 
 plot( d$population , d$total_tools , xlab="population" , ylab="total tools" ,
@@ -648,11 +751,6 @@ pop_seq <- exp( P_seq*1.53 + 9 )
 lambda <- link( m11.10 , data=data.frame( P=P_seq , cid=1 ) )
 lmu <- apply( lambda , 2 , mean )
 lci <- apply( lambda , 2 , PI )
-
-```
-
-```{r}
-
 lines( pop_seq , lmu , lty=2 , lwd=1.5 )
 shade( lci , pop_seq , xpd=TRUE )
 lambda <- link( m11.10 , data=data.frame( P=P_seq , cid=2 ) )
@@ -662,10 +760,25 @@ lines( pop_seq , lmu , lty=1 , lwd=1.5 )
 shade( lci , pop_seq , xpd=TRUE )
 
 ```
+Hawaii, Tonga, and the Trobriand Islands are highly influential points.
 
+Hawaii is very influential. It has extreme population size and the most tools, but low contact. This doesn't mean Hawaii is an outlier that should be dropped, but it does mean that Hawaii strongly influences the posterior distribution. (In the practice problems he has you drop Hawaii and see what changes)
+
+The model can produce a silly pattern, because it lets the intercept be a free parameter. But we know it should be 0. If there are no people, there are no tools.
+
+**OVERTHINKING**
+
+What we want is a dynamic model of the cultural evolution of tools. Tools aren’t created
+all at once. Instead they develop over time. Innovation adds them to a population. Processes
+of loss remove them. The simplest model assumes that innovation is proportional to population size, but with diminishing returns. Each additional person adds less innovation than
+the previous. It also assumes that tool loss is proportional to the number of tools, without
+diminishing returns. These forces balance to produce a tool kit of some size.
+
+If m11.10 is the geocentric model, then m11.11 is the scientific model
 ```{r 11.49}
 
 dat2 <- list( T=d$total_tools, P=d$population, cid=d$contact_id )
+
 m11.11 <- ulam(
 alist(
 T ~ dpois( lambda ),
@@ -676,23 +789,44 @@ g ~ dexp(1)
 ), data=dat2 , chains=4 , log_lik=TRUE )
 
 ```
+**END OVERTHINKING**
 
 
+## 11.2.2 Negative binomial (gamma-Poisson) models
+
+Typically there is a lot of unexplained variation in Poisson models. Presumably this additional variation arises from unobserved influences that vary from case to case, generating variation in the true λ’s. Ignoring this variation, or rate heterogeneity, can cause confounds just like it can for binomial models.
+
+So a common extension of Poisson GLMs is to swap it for a Negative Binomial distribution (aka Gamma-Poisson distribution), which is really a Poisson distribution in disguise. It is a mixture of different Poisson distribution. 
+
+For the last Poisson example, we’ll look at a case where the exposure varies across observations. When the length of observation, area of sampling, or intensity of sampling varies, the counts we observe also naturally vary. Since a Poisson distribution assumes that the rate of events is constant in time (or space), it’s easy to handle this. All we need to do, as explained above, is to add the logarithm of the exposure to the linear model. The term we add is typically called an offset.
+
+Back to our monastary. Let's simulate a month of daily counts of completed manuscripts:
 ```{r 11.50}
 
 num_days <- 30
-y <- rpois( num_days , 1.5 )
+y <- rpois( num_days , 1.5 ) # this is lamda, the rate
+
+# so now y holds 30 days of simulated counts of completed manuscripts
 
 ```
 
+Now let's say you're interested in purchasing another monastary. First you want to know how productive the new monastery might be.
+
+The current owners of that monestary keep weekly records, not daily.
+
+Suppose teh daily rate at the new monastery is lambda = 0.5. To simulate data on a weekly basis, we just multiply this average by 7, the exposure:
 ```{r 11.51}
 
 num_weeks <- 4
-y_new <- rpois( num_weeks , 0.5*7 )
+y_new <- rpois( num_weeks , 0.5*7 ) # rate * exposure
 
+# y_new holds four weeks of counts of completed manuscripts
 
 ```
 
+To analyze both y, totaled up daily, and y_new, totaled up weekly, we just add the logarithm of the exposure to the linear model.
+
+First let's build a data frame to organize the counts and help you see the exposure for each case:
 ```{r 11.52}
 
 y_all <- c( y , y_new )
@@ -700,12 +834,15 @@ exposure <- c( rep(1,30) , rep(7,4) )
 monastery <- c( rep(0,30) , rep(1,4) )
 d <- data.frame( y=y_all , days=exposure , monastery=monastery )
 
+# d should have three columns: observed counts in y, number of days each count was totaled over in days, and the new monastery is indicated ny monastery 
 ```
 
+Let's fit the model and estimate hte rate of manuscript production at each monastery. Compute the log of each exposure and then include taht variable in the linear model.
 ```{r 11.53}
 
 # compute the offset
 d$log_days <- log( d$days )
+
 # fit the model
 m11.12 <- quap(
 alist(
@@ -717,6 +854,7 @@ b ~ dnorm( 0 , 1 )
 
 ```
 
+Now let's sample from the posterior and then use the linear model, but without the offset. We don't use the offset again when computing predictions because the parameters are already on the daily scale for both monasteries.
 ```{r 11.54}
 
 post <- extract.samples( m11.12 )
@@ -726,6 +864,12 @@ precis( data.frame( lambda_old , lambda_new ) )
 
 ```
 
+
+### 11.3 Multinomial and categorical models
+
+## 11.3.1 Predictors match to outcomes
+
+Modeling career choice for a number of young adults.
 ```{r 11.55}
 
 # simulate career choices among 500 individuals
@@ -743,6 +887,7 @@ for ( i in 1:N ) career[i] <- sample( 1:3 , size=1 , prob=p )
 
 ```
 
+To fit the model to these fake data, we use the dcategorical likelihood, which is the multinomial logistic regression distribution. It works when each calue in the outcome variable, here career, contains the individual event types on each row.
 ```{r 11.56}
 
 code_m11.13 <- "
@@ -764,13 +909,14 @@ b ~ normal( 0 , 0.5 );
 s[1] = a[1] + b*career_income[1];
 s[2] = a[2] + b*career_income[2];
 s[3] = 0; // pivot
-p = softmax( s );
+p = softmax( s );  # multinomial logit link
 career ~ categorical( p );
 }
 "
 
 ```
 
+Set up the data list and invoke stan:
 ```{r 11.57}
 
 dat_list <- list( N=N , K=3 , career=career , career_income=income )
@@ -779,6 +925,7 @@ precis( m11.13 , 2 )
 
 ```
 
+To conduct a counterfactual simulation, we can extract the samples and make our own. The goal is to compare a counterfactual career in which the income is changed. How much does the probability change, in the presence of these competing careers? This is a subtle kind of question, because the probability change always depends upon the other choices. So let’s imagine doubling the income of career 2 above:
 ```{r 11.58}
 
 post <- extract.samples( m11.13 )
@@ -797,6 +944,10 @@ precis( p_diff )
 
 ```
 
+## 11.3.2 Predictors matched to observations
+
+
+Now consider an example in which each observed outcome has unique predictor values. Suppose you are still modeling career choice. But now you want to estimate the association between each person’s family income and which career they choose. So the predictor variable must have the same value in each linear model, for each row in the data. But now there is a unique parameter multiplying it in each linear model. This provides an estimate of the impact of family income on choice, for each type of career.
 ```{r 11.59}
 
 N <- 500
@@ -841,6 +992,9 @@ precis( m11.14 , 2 )
                      
 ```
 
+## Multinomial in disguise as Poisson
+
+Back to the Berkely data
 ```{r 11.60}
 
 library(rethinking)
@@ -849,6 +1003,7 @@ d <- UCBadmit
 
 ```
 
+Now let’s use a Poisson regression to model both the rate of admission and the rate of rejection. And we’ll compare the inference to the binomial model’s probability of admissi
 ```{r 11.61}
 
 # binomial model of overall admission probability
@@ -872,12 +1027,14 @@ c(a1,a2) ~ dnorm(0,1.5)
 
 ```
 
+Let’s consider just the posterior means, for the sake of simplicity. But keep in mind that the entire posterior is what matters. First, the inferred binomial probability of admission, across the entire data set, is:
 ```{r 11.62}
 
 inv_logit(coef(m_binom))
 
 ```
 
+And the Poisson model, the implied probability of admission:
 ```{r 11.63}
 
 k <- coef(m_pois)
